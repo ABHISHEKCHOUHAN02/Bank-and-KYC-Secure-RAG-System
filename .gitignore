@@ -12,6 +12,3 @@ wheels/
 .env
 /check.py
 /search_test.py
-/uv.lock
-/pyproject.toml
-/.python-version

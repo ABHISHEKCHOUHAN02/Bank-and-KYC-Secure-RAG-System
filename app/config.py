@@ -151,6 +151,8 @@ class Settings:
             raise ValueError("web_max_results must be >= 1")
         if not 0.0 < self.cache_similarity_threshold <= 1.0:
             raise ValueError("cache_similarity_threshold must be in (0, 1)")
+        if self.cache_ttl_seconds < 1:
+            raise ValueError("cache_ttl_seconds must be >= 1")
 
     def ensure_dirs(self) -> None:
         """Create writable directories. Call from scripts/entrypoints, not on import."""

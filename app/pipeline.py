@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 from functools import lru_cache
@@ -20,6 +21,9 @@ from app.schemas import (
 )
 from app.config import settings
 from security.guards import check_advice_scope, check_prompt_injection, guard_answer, redact_pii
+from cache.semantic import get_semantic_cache
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -72,6 +76,42 @@ def answer_question(question: str) -> QueryResponse:
     else:
         safe_question = request.query
         trace.steps.append(TraceStep(name="pii_redaction", status=StepStatus.SKIPPED))
+
+    cache_key_query = safe_question
+    if settings.cache_enabled:
+        cache_started = time.perf_counter()
+        try:
+            semantic_cache = get_semantic_cache()
+            cache_hit = semantic_cache.lookup(cache_key_query)
+            trace.steps.append(
+                TraceStep(
+                    name="semantic_cache_lookup",
+                    latency_ms=(time.perf_counter() - cache_started) * 1000,
+                    detail={"hit": cache_hit is not None,
+                            "similarity": round(cache_hit.similarity, 4) if cache_hit else None},
+                )
+            )
+            if cache_hit is not None:
+                cached = QueryResponse.model_validate(cache_hit.payload)
+                trace.cache_hit = True
+                trace.total_latency_ms = (time.perf_counter() - started) * 1000
+                return QueryResponse(
+                    answer=cached.answer,
+                    sources=cached.sources,
+                    trace=trace,
+                    refused=cached.refused,
+                    refusal_reason=cached.refusal_reason,
+                )
+        except Exception as exc:
+            logger.warning("Semantic cache lookup failed (%s); continuing without a cache hit.",
+                           type(exc).__name__)
+            trace.steps.append(
+                TraceStep(name="semantic_cache_lookup", status=StepStatus.ERROR,
+                          latency_ms=(time.perf_counter() - cache_started) * 1000,
+                          detail={"hit": False, "error": type(exc).__name__})
+            )
+    else:
+        trace.steps.append(TraceStep(name="semantic_cache_lookup", status=StepStatus.SKIPPED))
 
     state = get_graph().invoke(
         {
@@ -131,13 +171,30 @@ def answer_question(question: str) -> QueryResponse:
             safe_sources.append(source)
         sources = safe_sources
 
-    return QueryResponse(
+    response = QueryResponse(
         answer=answer,
         sources=sources,
         trace=trace,
         refused=refused,
         refusal_reason=refusal_reason,
     )
+    # Only persist a response after PII redaction and numeric validation are on.
+    if (settings.cache_enabled and settings.enable_pii_redaction and settings.enable_output_guard
+            and not response.refused):
+        cache_started = time.perf_counter()
+        try:
+            get_semantic_cache().store(cache_key_query, response)
+            trace.steps.append(TraceStep(name="semantic_cache_store",
+                                         latency_ms=(time.perf_counter() - cache_started) * 1000,
+                                         detail={"stored": True}))
+            trace.total_latency_ms = (time.perf_counter() - started) * 1000
+        except Exception as exc:
+            logger.warning("Semantic cache store failed (%s).", type(exc).__name__)
+            trace.steps.append(TraceStep(name="semantic_cache_store", status=StepStatus.ERROR,
+                                         latency_ms=(time.perf_counter() - cache_started) * 1000,
+                                         detail={"stored": False, "error": type(exc).__name__}))
+            trace.total_latency_ms = (time.perf_counter() - started) * 1000
+    return response
 
 
 def main() -> None:

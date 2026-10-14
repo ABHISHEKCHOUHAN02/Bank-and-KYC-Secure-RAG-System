@@ -139,6 +139,15 @@ class HybridRetriever:
         # Collection uses cosine space, so distance = 1 - cosine similarity.
         return [(cid, 1.0 - float(d)) for cid, d in zip(ids, distances)]
 
+    def embed_query(self, query: str) -> np.ndarray:
+        """Return the normalized BGE query embedding used by dense retrieval."""
+        vector = self._embedder.encode(
+            settings.query_instruction + query,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        return np.asarray(vector, dtype=np.float32)
+
     def bm25_search(self, query: str, k: int) -> list[tuple[str, float]]:
         tokens = _bm25_tokens(query)
         if not tokens:
