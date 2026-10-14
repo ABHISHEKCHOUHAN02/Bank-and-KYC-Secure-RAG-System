@@ -147,10 +147,11 @@ def build_graph(*, llm=None, retriever=None, web_searcher: Callable | None = Non
 
     def retrieve(state: GraphState) -> dict:
         started = time.perf_counter()
-        hits = retriever.retrieve(state["current_query"], mode="hybrid")
+        hits = retriever.retrieve(state["current_query"], mode=settings.retrieval_mode)
         state["trace"].steps.append(
             TraceStep(name="retrieve", latency_ms=(time.perf_counter() - started) * 1000,
-                      detail={"query_number": state.get("retries", 0) + 1, "result_count": len(hits)})
+                      detail={"query_number": state.get("retries", 0) + 1,
+                              "result_count": len(hits), "mode": settings.retrieval_mode})
         )
         return {"retrieved": hits}
 
@@ -236,6 +237,11 @@ def build_graph(*, llm=None, retriever=None, web_searcher: Callable | None = Non
             return "web_fallback"
         return "refuse"
 
+    def after_retrieve(state: GraphState) -> str:
+        # Ablation profiles without self-healing retain the same retrieval and answer nodes,
+        # but bypass relevance grading, rewriting, and web fallback.
+        return "grade" if settings.enable_self_healing else "answer"
+
     graph = StateGraph(GraphState)
     graph.add_node("retrieve", retrieve)
     graph.add_node("grade", grade)
@@ -244,7 +250,7 @@ def build_graph(*, llm=None, retriever=None, web_searcher: Callable | None = Non
     graph.add_node("answer", answer)
     graph.add_node("refuse", refuse)
     graph.add_edge(START, "retrieve")
-    graph.add_edge("retrieve", "grade")
+    graph.add_conditional_edges("retrieve", after_retrieve, {"grade": "grade", "answer": "answer"})
     graph.add_conditional_edges("grade", after_grade,
                                 {"answer": "answer", "rewrite": "rewrite",
                                  "web_fallback": "web_fallback", "refuse": "refuse"})

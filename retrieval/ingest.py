@@ -297,6 +297,8 @@ def discover_files() -> list[tuple[Path, SourceType]]:
     for directory, stype in (
         (settings.raw_rbi_dir, SourceType.RBI),
         (settings.raw_fictional_dir, SourceType.FICTIONAL_BANK),
+        (settings.uploads_rbi_dir, SourceType.RBI),
+        (settings.uploads_fictional_dir, SourceType.FICTIONAL_BANK),
     ):
         if not directory.exists():
             logger.warning("Missing directory: %s", directory)

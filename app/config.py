@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 from dotenv import load_dotenv
 load_dotenv()  # read .env if present
 
@@ -34,9 +35,50 @@ def _env_bool(name: str, default: bool) -> bool:
 # Repo root = parent of the `app/` directory this file lives in.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+ABLATION_PROFILES: dict[str, dict[str, object]] = {
+    # Retrieval-only baseline: single dense retriever and direct answer generation.
+    "plain_rag": {
+        "retrieval_mode": "dense", "enable_self_healing": False,
+        "enable_web_fallback": False, "cache_enabled": False,
+        "enable_injection_filter": False, "enable_pii_redaction": False,
+        "enable_scope_guard": False, "enable_output_guard": False,
+    },
+    # Hybrid retrieval, without the grader/rewriter loop or security controls.
+    "hybrid": {
+        "retrieval_mode": "hybrid", "enable_self_healing": False,
+        "enable_web_fallback": False, "cache_enabled": False,
+        "enable_injection_filter": False, "enable_pii_redaction": False,
+        "enable_scope_guard": False, "enable_output_guard": False,
+    },
+    # Hybrid retrieval plus relevance grading, rewrites, and allowlisted fallback.
+    "self_healing": {
+        "retrieval_mode": "hybrid", "enable_self_healing": True,
+        "enable_web_fallback": True, "cache_enabled": False,
+        "enable_injection_filter": False, "enable_pii_redaction": False,
+        "enable_scope_guard": False, "enable_output_guard": False,
+    },
+    # Full default product configuration.
+    "full_secure": {
+        "retrieval_mode": "hybrid", "enable_self_healing": True,
+        "enable_web_fallback": True, "cache_enabled": True,
+        "enable_injection_filter": True, "enable_pii_redaction": True,
+        "enable_scope_guard": True, "enable_output_guard": True,
+    },
+}
+
+_ACTIVE_PROFILE = os.getenv("ABLATION_PROFILE", "full_secure").strip().lower()
+if _ACTIVE_PROFILE not in ABLATION_PROFILES:
+    raise ValueError(
+        f"Unknown ABLATION_PROFILE {_ACTIVE_PROFILE!r}; choose from {', '.join(ABLATION_PROFILES)}"
+    )
+_PROFILE_DEFAULTS = ABLATION_PROFILES[_ACTIVE_PROFILE]
+
 
 @dataclass(frozen=True)
 class Settings:
+
+    # Experiment profile; per-feature environment variables below can override its defaults.
+    ablation_profile: str = _ACTIVE_PROFILE
 
     # Paths
     
@@ -45,6 +87,9 @@ class Settings:
     raw_dir: Path = BASE_DIR / "data" / "raw"
     raw_rbi_dir: Path = BASE_DIR / "data" / "raw" / "rbi"
     raw_fictional_dir: Path = BASE_DIR / "data" / "raw" / "fictional_bank"
+    uploads_dir: Path = BASE_DIR / "data" / "raw" / "uploads"
+    uploads_rbi_dir: Path = BASE_DIR / "data" / "raw" / "uploads" / "rbi"
+    uploads_fictional_dir: Path = BASE_DIR / "data" / "raw" / "uploads" / "fictional_bank"
     index_dir: Path = BASE_DIR / "data" / "indexes"
     chroma_dir: Path = BASE_DIR / "data" / "indexes" / "chroma"
     bm25_path: Path = BASE_DIR / "data" / "indexes" / "bm25.pkl"
@@ -88,11 +133,15 @@ class Settings:
     top_k: int = _env_int("TOP_K", 5)  # chunks passed to the generator after fusion
     rrf_k: int = _env_int("RRF_K", 60)  # RRF constant: score = 1 / (rrf_k + rank)
     chroma_collection: str = os.getenv("CHROMA_COLLECTION", "bank_kyc_rag")
+    retrieval_mode: Literal["dense", "bm25", "hybrid"] = os.getenv(
+        "RETRIEVAL_MODE", str(_PROFILE_DEFAULTS["retrieval_mode"])
+    )  # type: ignore[assignment]
 
 
     # LLM (Gemini). Model names change often: verify against Google's docs.
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    docs_admin_token: str = field(default_factory=lambda: os.getenv("DOCS_ADMIN_TOKEN", ""))
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
     llm_temperature: float = _env_float("LLM_TEMPERATURE", 0.0)
     llm_max_retries: int = _env_int("LLM_MAX_RETRIES", 3)  # API-level retries
@@ -106,7 +155,12 @@ class Settings:
     # LangGraph self-healing loop - it can retry the LLM with a new prompt if the output fails validation.
   
     max_rewrite_retries: int = _env_int("MAX_REWRITE_RETRIES", 2)
-    enable_web_fallback: bool = _env_bool("ENABLE_WEB_FALLBACK", True)
+    enable_self_healing: bool = _env_bool(
+        "ENABLE_SELF_HEALING", bool(_PROFILE_DEFAULTS["enable_self_healing"])
+    )
+    enable_web_fallback: bool = _env_bool(
+        "ENABLE_WEB_FALLBACK", bool(_PROFILE_DEFAULTS["enable_web_fallback"])
+    )
 
    
     # Web fallback allowlist (enforce by filtering result URLs, not just
@@ -118,7 +172,7 @@ class Settings:
     # semantic caching of embeddings and retrieval results. This is a big speedup for repeated queries.
     
     
-    cache_enabled: bool = _env_bool("CACHE_ENABLED", True)
+    cache_enabled: bool = _env_bool("CACHE_ENABLED", bool(_PROFILE_DEFAULTS["cache_enabled"]))
     cache_similarity_threshold: float = _env_float("CACHE_SIMILARITY_THRESHOLD", 0.92)
     cache_ttl_seconds: int = _env_int("CACHE_TTL_SECONDS", 24 * 60 * 60)
     redis_url: str = os.getenv("REDIS_URL", "")  # empty => in-memory cache
@@ -126,13 +180,25 @@ class Settings:
 
     # Security toggles (so ablations can switch layers on/off)
   
-    enable_injection_filter: bool = _env_bool("ENABLE_INJECTION_FILTER", True)
-    enable_pii_redaction: bool = _env_bool("ENABLE_PII_REDACTION", True)
-    enable_scope_guard: bool = _env_bool("ENABLE_SCOPE_GUARD", True)
-    enable_output_guard: bool = _env_bool("ENABLE_OUTPUT_GUARD", True)
+    enable_injection_filter: bool = _env_bool(
+        "ENABLE_INJECTION_FILTER", bool(_PROFILE_DEFAULTS["enable_injection_filter"])
+    )
+    enable_pii_redaction: bool = _env_bool(
+        "ENABLE_PII_REDACTION", bool(_PROFILE_DEFAULTS["enable_pii_redaction"])
+    )
+    enable_scope_guard: bool = _env_bool(
+        "ENABLE_SCOPE_GUARD", bool(_PROFILE_DEFAULTS["enable_scope_guard"])
+    )
+    enable_output_guard: bool = _env_bool(
+        "ENABLE_OUTPUT_GUARD", bool(_PROFILE_DEFAULTS["enable_output_guard"])
+    )
 
     def validate(self) -> None:
         """Fail fast on inconsistent settings."""
+        if self.ablation_profile not in ABLATION_PROFILES:
+            raise ValueError(f"Unsupported ablation profile: {self.ablation_profile}")
+        if self.retrieval_mode not in {"dense", "bm25", "hybrid"}:
+            raise ValueError("retrieval_mode must be dense, bm25, or hybrid")
         # +2 reserves room for [CLS]/[SEP]-style special tokens.
         
         if self.chunk_size_tokens + 2 > self.embedding_max_tokens:
@@ -159,6 +225,8 @@ class Settings:
         for d in (
             self.raw_rbi_dir,
             self.raw_fictional_dir,
+            self.uploads_rbi_dir,
+            self.uploads_fictional_dir,
             self.index_dir,
             self.eval_results_dir,
         ):

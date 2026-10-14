@@ -37,6 +37,24 @@ def answer_question(question: str) -> QueryResponse:
     request = QueryRequest(query=question)
     started = time.perf_counter()
     trace = Trace()
+    trace.steps.append(
+        TraceStep(
+            name="ablation_profile",
+            detail={
+                "profile": settings.ablation_profile,
+                "retrieval_mode": settings.retrieval_mode,
+                "self_healing": settings.enable_self_healing,
+                "web_fallback": settings.enable_web_fallback,
+                "cache": settings.cache_enabled,
+                "security": {
+                    "injection_filter": settings.enable_injection_filter,
+                    "pii_redaction": settings.enable_pii_redaction,
+                    "scope_guard": settings.enable_scope_guard,
+                    "output_guard": settings.enable_output_guard,
+                },
+            },
+        )
+    )
 
     def early_refusal(message: str, reason: RefusalReason) -> QueryResponse:
         trace.total_latency_ms = (time.perf_counter() - started) * 1000
