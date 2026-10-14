@@ -93,9 +93,14 @@ class Settings:
     # LLM (Gemini). Model names change often: verify against Google's docs.
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
     llm_temperature: float = _env_float("LLM_TEMPERATURE", 0.0)
     llm_max_retries: int = _env_int("LLM_MAX_RETRIES", 3)  # API-level retries
+    # Cheaper model for grader/rewriter. Defaults to the main model; override once --list shows a lighter one.
+    gemini_fast_model: str = os.getenv("GEMINI_FAST_MODEL", os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"))
+    llm_requests_per_minute: int = _env_int("LLM_RPM", 10)  # client-side pacing
+    llm_cache_enabled: bool = _env_bool("LLM_CACHE", False)  # disk cache: evals only
+    llm_cache_dir: Path = BASE_DIR / "data" / "llm_cache"
 
   
     # LangGraph self-healing loop - it can retry the LLM with a new prompt if the output fails validation.
@@ -140,6 +145,10 @@ class Settings:
             raise ValueError("chunk_overlap_tokens must be >= 0 and < chunk_size_tokens")
         if self.top_k > self.fetch_k:
             raise ValueError("top_k must be <= fetch_k")
+        if self.max_rewrite_retries < 0:
+            raise ValueError("max_rewrite_retries must be >= 0")
+        if self.web_max_results < 1:
+            raise ValueError("web_max_results must be >= 1")
         if not 0.0 < self.cache_similarity_threshold <= 1.0:
             raise ValueError("cache_similarity_threshold must be in (0, 1)")
 
